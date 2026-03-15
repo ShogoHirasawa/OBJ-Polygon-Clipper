@@ -1,7 +1,7 @@
 # OBJ Polygon Clipper
+<img width="600" height="955" alt="Image" src="https://github.com/user-attachments/assets/7718535d-a41c-4b75-9ed8-b92bea94d23e" />
 
 Minecraftのワールドデータを3Dモデル（OBJファイル）に変換した後、**好きな形の範囲だけを切り出せる**デスクトップアプリです。
-
 Mineways（Minecraft→OBJ変換ツール）では四角形の範囲しか選べませんが、このツールを使えば道路に沿った形や自由な多角形で切り出すことができます。
 
 ---
