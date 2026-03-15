@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>OBJ Polygon Clipper</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #eee; overflow: hidden; height: 100vh; }
+
+    #toolbar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+      background: #16213e; padding: 8px 16px;
+      display: flex; align-items: center; gap: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      font-size: 13px;
+    }
+    .btn {
+      background: #0f3460; color: #eee; border: none; padding: 6px 14px;
+      border-radius: 4px; cursor: pointer; font-size: 13px;
+    }
+    .btn:hover { background: #1a5276; }
+    .btn.active { background: #e94560; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .sep { width: 1px; height: 24px; background: #334; }
+    .status { font-size: 12px; color: #aaa; margin-left: auto; }
+
+    #viewport { width: 100%; height: calc(100vh - 44px); margin-top: 44px; position: relative; }
+    #three-canvas { width: 100%; height: 100%; display: block; }
+
+    #overlay {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none; z-index: 5;
+    }
+    #overlay.drawing { pointer-events: auto; cursor: crosshair; }
+
+    #progress-bar {
+      position: fixed; top: 44px; left: 0; right: 0; height: 4px;
+      background: #16213e; z-index: 20;
+    }
+    #progress-bar .fill {
+      height: 100%; background: #e94560; width: 0%;
+      transition: width 0.15s;
+    }
+
+    #loading-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 110;
+      background: rgba(26,26,46,0.85);
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+    }
+    #loading-overlay.hidden { display: none; }
+    #loading-overlay .loading-text { font-size: 18px; color: #eee; }
+    #loading-overlay .loading-bar-container {
+      width: 400px; height: 12px; background: #0f3460; border-radius: 6px; overflow: hidden;
+    }
+    #loading-overlay .loading-bar-fill {
+      height: 100%; background: linear-gradient(90deg, #e94560, #ff6b6b); width: 0%;
+      transition: width 0.15s; border-radius: 6px;
+    }
+    #loading-overlay .loading-percent { font-size: 24px; color: #e94560; font-weight: bold; }
+
+    #drop-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 100;
+      background: rgba(26,26,46,0.95);
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+    }
+    #drop-overlay.hidden { display: none; }
+    #drop-overlay .icon { font-size: 64px; }
+    #drop-overlay p { font-size: 18px; color: #aaa; }
+    #drop-overlay .btn { font-size: 16px; padding: 12px 28px; }
+
+    #info {
+      position: fixed; bottom: 12px; left: 12px; z-index: 10;
+      background: rgba(22,33,62,0.9); padding: 8px 14px;
+      border-radius: 6px; font-size: 12px; color: #aaa;
+    }
+
+    #height-panel {
+      position: fixed; right: 12px; top: 56px; z-index: 10;
+      background: rgba(22,33,62,0.95); padding: 12px 16px;
+      border-radius: 8px; width: 220px;
+      display: none;
+    }
+    #height-panel.visible { display: block; }
+    #height-panel label { font-size: 12px; color: #aaa; display: block; margin-bottom: 4px; }
+    #height-panel input[type=range] { width: 100%; margin: 4px 0 8px; }
+    #height-panel .val { font-size: 16px; color: #eee; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+<div id="toolbar">
+  <button class="btn" id="btn-open">OBJを開く</button>
+  <div class="sep"></div>
+  <button class="btn" id="btn-draw" disabled>選択範囲を描く</button>
+  <button class="btn" id="btn-undo" disabled>戻す</button>
+  <button class="btn" id="btn-clear" disabled>クリア</button>
+  <button class="btn" id="btn-close-poly" disabled>確定</button>
+  <div class="sep"></div>
+  <button class="btn" id="btn-export" disabled>エクスポート</button>
+  <span class="status" id="status">OBJファイルを読み込んでください</span>
+</div>
+
+<div id="progress-bar"><div class="fill" id="progress-fill"></div></div>
+
+<div id="viewport">
+  <canvas id="three-canvas"></canvas>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="height-panel">
+  <div style="font-size:13px; color:#eee; margin-bottom:8px; font-weight:bold;">選択範囲の高さ</div>
+  <label>高さ (底面: 0 固定)</label>
+  <input type="range" id="height-slider" min="1" max="500" value="500">
+  <div class="val">高さ: <span id="height-val">500</span></div>
+</div>
+
+<div id="loading-overlay" class="hidden">
+  <div class="loading-percent" id="loading-percent">0%</div>
+  <div class="loading-bar-container"><div class="loading-bar-fill" id="loading-bar-fill"></div></div>
+  <div class="loading-text" id="loading-text">読み込み中...</div>
+</div>
+
+<div id="drop-overlay">
+  <div class="icon">📦</div>
+  <p>MinewaysのOBJファイルを読み込みます</p>
+  <button class="btn" id="btn-open-initial">ファイルを選択</button>
+</div>
+
+<div id="info"><span id="info-text">座標: -</span></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./node_modules/three/build/three.module.js",
+    "three/addons/": "./node_modules/three/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── State ──
+let scene, camera, renderer, controls;
+let mesh = null;
+let currentFilePath = null;
+let bounds = null;
+
+// Polygon drawing
+let polygonPoints = [];
+let isDrawing = false;
+let polygonClosed = false;
+
+// Selection volume
+let selectionMesh = null;
+let selectionHeight = 500;
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // Y=0
+const raycaster = new THREE.Raycaster();
+
+// ── DOM ──
+const canvas = document.getElementById('three-canvas');
+const overlay = document.getElementById('overlay');
+const overlayCtx = overlay.getContext('2d');
+const dropOverlay = document.getElementById('drop-overlay');
+const statusEl = document.getElementById('status');
+const infoText = document.getElementById('info-text');
+const progressFill = document.getElementById('progress-fill');
+const loadingOverlay = document.getElementById('loading-overlay');
+const loadingPercent = document.getElementById('loading-percent');
+const loadingBarFill = document.getElementById('loading-bar-fill');
+const loadingText = document.getElementById('loading-text');
+const heightPanel = document.getElementById('height-panel');
+const heightSlider = document.getElementById('height-slider');
+const heightVal = document.getElementById('height-val');
+let loadStartTime = 0;
+
+const btnOpen = document.getElementById('btn-open');
+const btnOpenInitial = document.getElementById('btn-open-initial');
+const btnDraw = document.getElementById('btn-draw');
+const btnUndo = document.getElementById('btn-undo');
+const btnClear = document.getElementById('btn-clear');
+const btnClosePoly = document.getElementById('btn-close-poly');
+const btnExport = document.getElementById('btn-export');
+
+// ── Progress ──
+window.api.onLoadProgress((p) => {
+  const phaseText = p.phase === 'parsing' ? 'OBJファイルを解析中' : 'メッシュを構築中';
+  statusEl.textContent = `${phaseText}... ${p.percent}%`;
+  progressFill.style.width = p.percent + '%';
+  loadingPercent.textContent = p.percent + '%';
+  loadingBarFill.style.width = p.percent + '%';
+  loadingText.textContent = phaseText + '...';
+});
+window.api.onExportProgress((p) => {
+  const phaseText = p.phase === 'scanning' ? 'スキャン中' : 'エクスポート中';
+  statusEl.textContent = `${phaseText}... ${p.percent}%`;
+  progressFill.style.width = p.percent + '%';
+  loadingPercent.textContent = p.percent + '%';
+  loadingBarFill.style.width = p.percent + '%';
+  loadingText.textContent = phaseText + '...';
+});
+
+// ── Three.js Init ──
+function initScene() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1a2e);
+
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+
+  camera = new THREE.PerspectiveCamera(60, w / h, 0.1, 50000);
+  camera.position.set(0, 500, 500);
+
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  controls = new OrbitControls(camera, canvas);
+  controls.enableRotate = true;
+  controls.enablePan = true;
+  controls.zoomToCursor = true;
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  dirLight.position.set(200, 500, 200);
+  scene.add(dirLight);
+
+  const grid = new THREE.GridHelper(2000, 100, 0x334455, 0x222233);
+  scene.add(grid);
+
+  controls.addEventListener('change', () => {
+    if (polygonPoints.length > 0 && !polygonClosed) drawOverlayPolygon();
+  });
+
+  resizeOverlay();
+  animate();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+function resizeOverlay() {
+  const rect = canvas.getBoundingClientRect();
+  overlay.width = rect.width * window.devicePixelRatio;
+  overlay.height = rect.height * window.devicePixelRatio;
+  overlay.style.width = rect.width + 'px';
+  overlay.style.height = rect.height + 'px';
+  overlayCtx.setTransform(window.devicePixelRatio, 0, 0, window.devicePixelRatio, 0, 0);
+}
+
+window.addEventListener('resize', () => {
+  if (!camera || !renderer) return;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  resizeOverlay();
+  if (!polygonClosed) drawOverlayPolygon();
+});
+
+// ── Raycast: mesh surface first, fallback to ground plane ──
+function screenToGround(sx, sy) {
+  const rect = canvas.getBoundingClientRect();
+  const ndcX = ((sx - rect.left) / rect.width) * 2 - 1;
+  const ndcY = -((sy - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+
+  // Try mesh intersection first for accurate XZ
+  if (mesh) {
+    const hits = raycaster.intersectObject(mesh);
+    if (hits.length > 0) {
+      return { x: hits[0].point.x, z: hits[0].point.z };
+    }
+  }
+
+  // Fallback to ground plane
+  const target = new THREE.Vector3();
+  const hit = raycaster.ray.intersectPlane(groundPlane, target);
+  return hit ? { x: target.x, z: target.z } : null;
+}
+
+function worldToScreen(wx, wy, wz) {
+  const vec = new THREE.Vector3(wx, wy, wz);
+  vec.project(camera);
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (vec.x + 1) / 2 * rect.width,
+    y: (-vec.y + 1) / 2 * rect.height,
+  };
+}
+
+// ── File Loading ──
+async function openFile() {
+  const filePath = await window.api.openFileDialog();
+  if (!filePath) return;
+  await loadFile(filePath);
+}
+
+async function loadFile(filePath) {
+  statusEl.textContent = '読み込み開始...';
+  progressFill.style.width = '0%';
+  dropOverlay.classList.add('hidden');
+  loadingOverlay.classList.remove('hidden');
+  loadingPercent.textContent = '0%';
+  loadingBarFill.style.width = '0%';
+  loadingText.textContent = '読み込み開始...';
+
+  loadStartTime = Date.now();
+  currentFilePath = filePath;
+
+  let result;
+  try {
+    result = await window.api.loadOBJ(filePath);
+  } catch (err) {
+    statusEl.textContent = 'エラー: ' + err.message;
+    loadingOverlay.classList.add('hidden');
+    return;
+  }
+
+  if (result.error) {
+    statusEl.textContent = 'エラー: ' + result.error;
+    loadingOverlay.classList.add('hidden');
+    return;
+  }
+
+  // Remove old model
+  if (mesh) {
+    mesh.traverse(c => {
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) {
+        if (c.material.map) c.material.map.dispose();
+        c.material.dispose();
+      }
+    });
+    scene.remove(mesh);
+  }
+
+  // Build meshes per material with textures
+  const textureLoader = new THREE.TextureLoader();
+  mesh = new THREE.Group();
+
+  for (const group of result.meshGroups) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(group.positions), 3));
+    if (group.normals) {
+      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(group.normals), 3));
+    } else {
+      geo.computeVertexNormals();
+    }
+    if (group.uvs) {
+      geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(group.uvs), 2));
+    }
+
+    const matOpts = { side: THREE.DoubleSide };
+
+    if (group.texturePath) {
+      try {
+        const tex = textureLoader.load('file://' + group.texturePath);
+        tex.magFilter = THREE.NearestFilter;
+        tex.minFilter = THREE.NearestFilter;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        matOpts.map = tex;
+      } catch (e) {
+        matOpts.color = 0xcccccc;
+      }
+    } else {
+      matOpts.color = 0xcccccc;
+    }
+
+    const mat = new THREE.MeshLambertMaterial(matOpts);
+    const m = new THREE.Mesh(geo, mat);
+    mesh.add(m);
+  }
+
+  scene.add(mesh);
+
+  bounds = result.bounds;
+
+  // Ground plane at Y=0
+  groundPlane.constant = 0;
+
+  // Fit camera
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+  const cz = (bounds.minZ + bounds.maxZ) / 2;
+  const maxDim = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
+  camera.position.set(cx + maxDim * 0.5, cy + maxDim * 0.6, cz + maxDim * 0.5);
+  controls.target.set(cx, cy, cz);
+  controls.update();
+
+  // Height slider: 0 to maxY, default = maxY
+  const maxY = Math.max(1, Math.ceil(bounds.maxY));
+  selectionHeight = maxY;
+  heightSlider.min = 1;
+  heightSlider.max = maxY;
+  heightSlider.value = maxY;
+  heightVal.textContent = maxY;
+
+  loadingOverlay.classList.add('hidden');
+  btnDraw.disabled = false;
+
+  const elapsed = ((Date.now() - loadStartTime) / 1000).toFixed(1);
+  const triCount = (result.triangleCount / 1000).toFixed(0);
+  statusEl.textContent = `読み込み完了: ${triCount}K 三角形 (${elapsed}秒)`;
+  progressFill.style.width = '100%';
+  setTimeout(() => { progressFill.style.width = '0%'; }, 1000);
+}
+
+btnOpen.addEventListener('click', openFile);
+btnOpenInitial.addEventListener('click', openFile);
+
+// ── Height slider ──
+heightSlider.addEventListener('input', () => {
+  selectionHeight = parseInt(heightSlider.value);
+  heightVal.textContent = selectionHeight;
+  updateSelectionVolume();
+});
+
+// ── Mouse info ──
+canvas.addEventListener('mousemove', (e) => {
+  const world = screenToGround(e.clientX, e.clientY);
+  if (world) {
+    infoText.textContent = `X: ${world.x.toFixed(1)}, Z: ${world.z.toFixed(1)}`;
+  }
+});
+
+// ── Polygon Drawing ──
+btnDraw.addEventListener('click', () => {
+  if (isDrawing) {
+    stopDrawing();
+  } else {
+    startDrawing();
+  }
+});
+
+function startDrawing() {
+  isDrawing = true;
+  polygonPoints = [];
+  polygonClosed = false;
+  removeSelectionVolume();
+  clearOverlay();
+  btnDraw.classList.add('active');
+  btnDraw.textContent = '描画中... (左クリック: 頂点, 右クリック: 確定)';
+  overlay.classList.add('drawing');
+  btnUndo.disabled = false;
+  btnClear.disabled = false;
+  btnClosePoly.disabled = false;
+  btnExport.disabled = true;
+  heightPanel.classList.remove('visible');
+  controls.enabled = false;
+}
+
+function stopDrawing() {
+  isDrawing = false;
+  btnDraw.classList.remove('active');
+  btnDraw.textContent = '選択範囲を描く';
+  overlay.classList.remove('drawing');
+  controls.enabled = true;
+}
+
+overlay.addEventListener('click', (e) => {
+  if (!isDrawing || polygonClosed) return;
+  const world = screenToGround(e.clientX, e.clientY);
+  if (!world) return;
+
+  // Check if closing (click near first point)
+  if (polygonPoints.length >= 3) {
+    const first = worldToScreen(polygonPoints[0].x, 0, polygonPoints[0].z);
+    const rect = overlay.getBoundingClientRect();
+    const dist = Math.hypot(e.clientX - rect.left - first.x, e.clientY - rect.top - first.y);
+    if (dist < 15) {
+      closePolygon();
+      return;
+    }
+  }
+
+  polygonPoints.push(world);
+  drawOverlayPolygon();
+});
+
+overlay.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (isDrawing && polygonPoints.length >= 3) {
+    closePolygon();
+  }
+});
+
+overlay.addEventListener('mousemove', (e) => {
+  if (!isDrawing || polygonClosed || polygonPoints.length === 0) return;
+  drawOverlayPolygon(e.clientX, e.clientY);
+});
+
+btnUndo.addEventListener('click', () => {
+  if (polygonClosed) {
+    polygonClosed = false;
+    removeSelectionVolume();
+    clearOverlay();
+    heightPanel.classList.remove('visible');
+    btnExport.disabled = true;
+    btnClosePoly.disabled = false;
+    // Re-enter drawing
+    isDrawing = true;
+    btnDraw.classList.add('active');
+    btnDraw.textContent = '描画中... (左クリック: 頂点, 右クリック: 確定)';
+    overlay.classList.add('drawing');
+    controls.enabled = false;
+    drawOverlayPolygon();
+  } else {
+    polygonPoints.pop();
+    drawOverlayPolygon();
+  }
+});
+
+btnClear.addEventListener('click', () => {
+  polygonPoints = [];
+  polygonClosed = false;
+  removeSelectionVolume();
+  clearOverlay();
+  heightPanel.classList.remove('visible');
+  btnExport.disabled = true;
+  btnClosePoly.disabled = false;
+  if (isDrawing) drawOverlayPolygon();
+});
+
+btnClosePoly.addEventListener('click', () => {
+  if (polygonPoints.length >= 3) closePolygon();
+});
+
+function closePolygon() {
+  polygonClosed = true;
+  stopDrawing();
+  clearOverlay(); // 2Dオーバーレイを消す
+  btnExport.disabled = false;
+  btnClosePoly.disabled = true;
+  heightPanel.classList.add('visible');
+  statusEl.textContent = `選択確定 (${polygonPoints.length} 頂点, 高さ: ${selectionHeight})`;
+  updateSelectionVolume(); // 3Dボリュームだけ表示
+}
+
+function clearOverlay() {
+  const rect = overlay.getBoundingClientRect();
+  overlayCtx.clearRect(0, 0, rect.width, rect.height);
+}
+
+// ── 2D Overlay Drawing (only during drawing, not after close) ──
+function drawOverlayPolygon(mouseX, mouseY) {
+  const rect = overlay.getBoundingClientRect();
+  overlayCtx.clearRect(0, 0, rect.width, rect.height);
+  if (polygonPoints.length === 0 || polygonClosed) return;
+
+  const pts = polygonPoints.map(p => worldToScreen(p.x, 0, p.z));
+
+  // Lines
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) overlayCtx.lineTo(pts[i].x, pts[i].y);
+  if (mouseX !== undefined) {
+    const r = overlay.getBoundingClientRect();
+    overlayCtx.lineTo(mouseX - r.left, mouseY - r.top);
+  }
+  overlayCtx.strokeStyle = '#e94560';
+  overlayCtx.lineWidth = 2;
+  overlayCtx.stroke();
+
+  // Vertices
+  for (let i = 0; i < pts.length; i++) {
+    overlayCtx.beginPath();
+    overlayCtx.arc(pts[i].x, pts[i].y, i === 0 ? 7 : 5, 0, Math.PI * 2);
+    overlayCtx.fillStyle = i === 0 ? '#ff6b6b' : '#e94560';
+    overlayCtx.fill();
+    overlayCtx.strokeStyle = '#fff';
+    overlayCtx.lineWidth = 1.5;
+    overlayCtx.stroke();
+  }
+}
+
+// ── 3D Selection Volume ──
+function updateSelectionVolume() {
+  removeSelectionVolume();
+  if (!polygonClosed || polygonPoints.length < 3) return;
+
+  const h = selectionHeight;
+
+  const shape = new THREE.Shape();
+  // rotateX(-PI/2) で Z が反転するので、Shape には -z を渡す
+  shape.moveTo(polygonPoints[0].x, -polygonPoints[0].z);
+  for (let i = 1; i < polygonPoints.length; i++) {
+    shape.lineTo(polygonPoints[i].x, -polygonPoints[i].z);
+  }
+  shape.closePath();
+
+  const extrudeSettings = { depth: h, bevelEnabled: false };
+  const geo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+  geo.rotateX(-Math.PI / 2);
+
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xe94560,
+    transparent: true,
+    opacity: 0.15,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+
+  const wireGeo = new THREE.EdgesGeometry(geo);
+  const wireMat = new THREE.LineBasicMaterial({ color: 0xe94560, transparent: true, opacity: 0.6 });
+  const wireframe = new THREE.LineSegments(wireGeo, wireMat);
+
+  selectionMesh = new THREE.Group();
+  selectionMesh.add(new THREE.Mesh(geo, mat));
+  selectionMesh.add(wireframe);
+  scene.add(selectionMesh);
+
+  statusEl.textContent = `選択確定 (${polygonPoints.length} 頂点, 高さ: ${h})`;
+}
+
+function removeSelectionVolume() {
+  if (selectionMesh) {
+    scene.remove(selectionMesh);
+    selectionMesh.traverse(c => {
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) c.material.dispose();
+    });
+    selectionMesh = null;
+  }
+}
+
+// ── Export ──
+btnExport.addEventListener('click', async () => {
+  if (!polygonClosed || !currentFilePath) return;
+  statusEl.textContent = 'エクスポート中...';
+  loadingOverlay.classList.remove('hidden');
+  loadingPercent.textContent = '0%';
+  loadingBarFill.style.width = '0%';
+  loadingText.textContent = 'エクスポート中...';
+
+  loadStartTime = Date.now();
+
+  const result = await window.api.exportClippedOBJ({
+    originalPath: currentFilePath,
+    polygon: polygonPoints,
+    yMin: 0,
+    yMax: selectionHeight,
+  });
+
+  loadingOverlay.classList.add('hidden');
+  if (result) {
+    statusEl.textContent = `エクスポート完了: ${result}`;
+  } else {
+    statusEl.textContent = 'エクスポートがキャンセルされました';
+  }
+});
+
+// ── Init ──
+initScene();
+</script>
+</body>
+</html>
